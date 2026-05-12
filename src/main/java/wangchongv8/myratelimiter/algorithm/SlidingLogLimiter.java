@@ -5,6 +5,14 @@ import java.util.List;
 import wangchongv8.myratelimiter.core.RateLimiterConfig;
 import wangchongv8.myratelimiter.redis.RedisOperations;
 
+/**
+ * 滑动日志（Sliding Log）限流算法。
+ *
+ * <p>与滑动窗口实现相同（ZSET），语义上记录每次请求的精确时间戳。
+ * 精度最高但 Redis 内存开销最大，适用于需要精确审计的场景。
+ *
+ * @see SlidingWindowLimiter 内存开销更小的滑动窗口替代方案
+ */
 public class SlidingLogLimiter extends AbstractRateLimiter {
     private static final String LUA_SCRIPT = loadScript("/lua/sliding_log.lua");
 
