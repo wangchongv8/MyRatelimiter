@@ -45,11 +45,54 @@ public class SlidingWindowLimiterTest {
         List<String> args = captor.getValue();
         assertEquals("1000", args.get(0));  // 1 second in millis
         assertEquals("10", args.get(1));    // limit
-        assertEquals("3", args.get(4));      // requested permits
+        assertEquals("3", args.get(2));      // requested permits
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldRejectNullKey() {
         limiter.tryAcquire(null);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectZeroPermits() {
+        limiter.tryAcquire("user:1", 0);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectNegativePermits() {
+        limiter.tryAcquire("user:1", -1);
+    }
+
+    @Test
+    public void shouldPropagateRedisException() {
+        when(redisOps.eval(anyString(), anyString(), anyList()))
+            .thenThrow(new RuntimeException("redis down"));
+        try {
+            limiter.tryAcquire("user:1");
+            fail("expected exception");
+        } catch (RuntimeException e) {
+            assertEquals("redis down", e.getMessage());
+        }
+    }
+
+    @Test
+    public void shouldAcquireBlockUntilAllowed() {
+        when(redisOps.eval(anyString(), eq("rl:user:1"), anyList()))
+            .thenReturn(0L, 1L);
+        limiter.acquire("user:1");
+        verify(redisOps, times(2)).eval(anyString(), eq("rl:user:1"), anyList());
+    }
+
+    @Test
+    public void shouldAcquireThrowOnTimeout() {
+        when(redisOps.eval(anyString(), eq("rl:user:1"), anyList())).thenReturn(0L);
+        long start = System.currentTimeMillis();
+        try {
+            limiter.acquire("user:1", 1, 200, java.util.concurrent.TimeUnit.MILLISECONDS);
+            fail("expected RateLimitExceededException");
+        } catch (wangchongv8.myratelimiter.core.RateLimitExceededException e) {
+            long elapsed = System.currentTimeMillis() - start;
+            assertTrue(elapsed >= 200);
+        }
     }
 }

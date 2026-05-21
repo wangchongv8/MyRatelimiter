@@ -9,14 +9,14 @@ import wangchongv8.myratelimiter.core.RateLimiter;
 import wangchongv8.myratelimiter.builder.RateLimiterBuilder;
 import wangchongv8.myratelimiter.redis.JedisRedisOps;
 
-public class TokenBucketIT extends BaseRedisIT {
+public class LeakyBucketIT extends BaseRedisIT {
 
     private RateLimiter limiter;
 
     @Before
     public void setUp() {
         limiter = new RateLimiterBuilder()
-            .algorithm(Algorithm.TOKEN_BUCKET)
+            .algorithm(Algorithm.LEAKY_BUCKET)
             .permits(5)
             .perSecond(1)
             .redisOps(new JedisRedisOps(jedisPool))
@@ -24,31 +24,31 @@ public class TokenBucketIT extends BaseRedisIT {
     }
 
     @Test
-    public void shouldAllowWithinLimit() {
+    public void shouldAllowWithinCapacity() {
         for (int i = 0; i < 5; i++) {
-            assertTrue("Request " + i + " should be allowed", limiter.tryAcquire("it:tb:1"));
+            assertTrue("Request " + i + " should be allowed", limiter.tryAcquire("it:lb:1"));
         }
     }
 
     @Test
-    public void shouldDenyOverLimit() {
+    public void shouldDenyWhenBucketFull() {
         for (int i = 0; i < 5; i++) {
-            limiter.tryAcquire("it:tb:2");
+            limiter.tryAcquire("it:lb:2");
         }
-        assertFalse(limiter.tryAcquire("it:tb:2"));
+        assertFalse(limiter.tryAcquire("it:lb:2"));
     }
 
     @Test
     public void differentKeysShouldNotInterfere() {
         for (int i = 0; i < 5; i++) {
-            limiter.tryAcquire("it:tb:A");
+            limiter.tryAcquire("it:lb:A");
         }
-        assertTrue(limiter.tryAcquire("it:tb:B"));
+        assertTrue(limiter.tryAcquire("it:lb:B"));
     }
 
     @Test
-    public void shouldRefillAfterTimePasses() throws InterruptedException {
-        String key = "it:tb:refill";
+    public void shouldLeakAfterTimePasses() throws InterruptedException {
+        String key = "it:lb:leak";
         for (int i = 0; i < 5; i++) {
             limiter.tryAcquire(key);
         }
@@ -60,17 +60,27 @@ public class TokenBucketIT extends BaseRedisIT {
     }
 
     @Test
-    public void shouldRefillPartially() throws InterruptedException {
-        // 5 permits/sec, wait 600ms → ~3 tokens refilled
-        String key = "it:tb:partial";
+    public void shouldProcessSteadyRequests() throws InterruptedException {
+        String key = "it:lb:steady";
+        for (int i = 0; i < 10; i++) {
+            assertTrue("Steady request " + i + " should pass", limiter.tryAcquire(key));
+            Thread.sleep(250);
+        }
+    }
+
+    @Test
+    public void shouldPartiallyLeakAfterTimePasses() throws InterruptedException {
+        String key = "it:lb:partial";
+        // 占满桶
         for (int i = 0; i < 5; i++) {
-            limiter.tryAcquire(key);
+            assertTrue(limiter.tryAcquire(key));
         }
         assertFalse(limiter.tryAcquire(key));
 
-        Thread.sleep(600);
+        // 等 400ms，约漏出 5 * 0.4 = 2 个
+        Thread.sleep(400);
 
-        assertTrue(limiter.tryAcquire(key));
+        // 恢复 2 个额度，第 3 个拒绝
         assertTrue(limiter.tryAcquire(key));
         assertTrue(limiter.tryAcquire(key));
         assertFalse(limiter.tryAcquire(key));

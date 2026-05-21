@@ -23,12 +23,10 @@ public class SlidingLogLimiter extends AbstractRateLimiter {
     @Override
     public boolean tryAcquire(String key, int permits) {
         validate(key, permits);
-        long now = System.currentTimeMillis();
         String redisKey = config.getRedisKeyPrefix() + key;
         List<String> args = Arrays.asList(
             String.valueOf(config.getIntervalSeconds() * 1000L),
             String.valueOf(config.getPermits()),
-            String.valueOf(now),
             String.valueOf(System.nanoTime()),
             String.valueOf(permits)
         );

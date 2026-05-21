@@ -19,8 +19,7 @@ public class LeakyBucketLimiterTest {
     @Before
     public void setUp() {
         redisOps = mock(RedisOperations.class);
-        RateLimiterConfig config = new RateLimiterConfig(10, 1, "rl:");
-        limiter = new LeakyBucketLimiter(config, redisOps);
+        limiter = new LeakyBucketLimiter(new RateLimiterConfig(1000, 1, "rl:"), redisOps);
     }
 
     @Test
@@ -43,13 +42,54 @@ public class LeakyBucketLimiterTest {
         limiter.tryAcquire("user:1", 2);
 
         List<String> args = captor.getValue();
-        assertEquals("10", args.get(0));   // capacity
-        assertEquals("10.0", args.get(1)); // leak rate = permits/seconds
-        assertEquals("2", args.get(2));    // requested
+        assertEquals("1000", args.get(0));   // capacity
+        assertEquals("1000.0", args.get(1)); // leak rate = 1000/1s
+        assertEquals("2", args.get(2));      // requested
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldRejectNullKey() {
         limiter.tryAcquire(null);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectZeroPermits() {
+        limiter.tryAcquire("user:1", 0);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectNegativePermits() {
+        limiter.tryAcquire("user:1", -1);
+    }
+
+    @Test
+    public void shouldPropagateRedisException() {
+        when(redisOps.eval(anyString(), anyString(), anyList()))
+            .thenThrow(new RuntimeException("redis down"));
+        try {
+            limiter.tryAcquire("user:1");
+            fail("expected exception");
+        } catch (RuntimeException e) {
+            assertEquals("redis down", e.getMessage());
+        }
+    }
+
+    @Test
+    public void shouldAcquireBlockUntilAllowed() {
+        when(redisOps.eval(anyString(), eq("rl:user:1"), anyList()))
+            .thenReturn(0L, 1L);
+        limiter.acquire("user:1");
+        verify(redisOps, times(2)).eval(anyString(), eq("rl:user:1"), anyList());
+    }
+
+    @Test
+    public void shouldAcquireThrowOnTimeout() {
+        when(redisOps.eval(anyString(), eq("rl:user:1"), anyList())).thenReturn(0L);
+        try {
+            limiter.acquire("user:1", 1, 200, java.util.concurrent.TimeUnit.MILLISECONDS);
+            fail("expected RateLimitExceededException");
+        } catch (wangchongv8.myratelimiter.core.RateLimitExceededException e) {
+            // 预期在超时前抛出异常
+        }
     }
 }

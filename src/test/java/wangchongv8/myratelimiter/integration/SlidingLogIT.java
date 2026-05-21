@@ -9,14 +9,14 @@ import wangchongv8.myratelimiter.core.RateLimiter;
 import wangchongv8.myratelimiter.builder.RateLimiterBuilder;
 import wangchongv8.myratelimiter.redis.JedisRedisOps;
 
-public class SlidingWindowIT extends BaseRedisIT {
+public class SlidingLogIT extends BaseRedisIT {
 
     private RateLimiter limiter;
 
     @Before
     public void setUp() {
         limiter = new RateLimiterBuilder()
-            .algorithm(Algorithm.SLIDING_WINDOW)
+            .algorithm(Algorithm.SLIDING_LOG)
             .permits(5)
             .perSecond(2)
             .redisOps(new JedisRedisOps(jedisPool))
@@ -26,80 +26,59 @@ public class SlidingWindowIT extends BaseRedisIT {
     @Test
     public void shouldAllowWithinWindow() {
         for (int i = 0; i < 5; i++) {
-            assertTrue(limiter.tryAcquire("it:sw:1"));
+            assertTrue("Request " + i + " should be allowed", limiter.tryAcquire("it:sl:1"));
         }
     }
 
     @Test
     public void shouldDenyOverWindow() {
         for (int i = 0; i < 5; i++) {
-            limiter.tryAcquire("it:sw:2");
+            limiter.tryAcquire("it:sl:2");
         }
-        assertFalse(limiter.tryAcquire("it:sw:2"));
+        assertFalse(limiter.tryAcquire("it:sl:2"));
     }
 
     @Test
     public void differentKeysShouldNotInterfere() {
         for (int i = 0; i < 5; i++) {
-            limiter.tryAcquire("it:sw:A");
+            limiter.tryAcquire("it:sl:A");
         }
-        assertTrue(limiter.tryAcquire("it:sw:B"));
+        assertTrue(limiter.tryAcquire("it:sl:B"));
     }
 
     @Test
     public void shouldRecoverAfterWindowPasses() throws InterruptedException {
-        String key = "it:sw:recover";
+        String key = "it:sl:recover";
         for (int i = 0; i < 5; i++) {
             limiter.tryAcquire(key);
         }
         assertFalse(limiter.tryAcquire(key));
 
-        Thread.sleep(2300);
+        Thread.sleep(2100);
 
         assertTrue(limiter.tryAcquire(key));
     }
 
     @Test
-    public void shouldCleanExpiredEntriesAndRestoreFullWindow() throws InterruptedException {
-        String key = "it:sw:cleanup";
-        for (int i = 0; i < 5; i++) {
-            assertTrue("Round 1 request " + i + " should be allowed", limiter.tryAcquire(key));
-        }
-        assertFalse(limiter.tryAcquire(key));
-
-        // 等待窗口过期，惰性删除清理所有过期子窗口
-        Thread.sleep(2300);
-
-        // 过期条目全部清理后，窗口应恢复满额 5 个
-        for (int i = 0; i < 5; i++) {
-            assertTrue("Round 2 request " + i + " should be allowed", limiter.tryAcquire(key));
-        }
-        assertFalse(limiter.tryAcquire(key));
-    }
-
-    @Test
     public void shouldGraduallyExpireOldestEntries() throws InterruptedException {
-        String key = "it:sw:slide";
+        String key = "it:sl:slide";
 
-        // 第一批 3 个请求 (T≈0)
+        // 第一批 3 条记录 (T≈0)
         for (int i = 0; i < 3; i++) {
             assertTrue(limiter.tryAcquire(key));
         }
-
-        // 隔 1800ms 发第二批，确保两批在不同的时间桶内
         Thread.sleep(1800);
 
-        // 第二批 2 个请求 (T≈1800ms)，占满 5 个配额
+        // 第二批 2 条 (T≈1800ms)，占满 5 个配额
         for (int i = 0; i < 2; i++) {
             assertTrue(limiter.tryAcquire(key));
         }
         assertFalse(limiter.tryAcquire(key));
 
-        // 再等 500ms：T≈2300ms，第一批 (2300ms 前) 已滑出 2000ms 窗口，
-        // 第二批 (500ms 前) 仍在窗口内
+        // 再等 500ms：T≈2300ms，第一批的 3 条已滑出 2000ms 窗口
         Thread.sleep(500);
 
-        // 第一批 3 个过期删除，第二批 2 个仍在 → 恢复 3 个额度
+        // 第一批过期删除，第二批仍在 → 恢复 3 个额度
         for (int i = 0; i < 3; i++) {
             assertTrue("should allow " + i + " after oldest expired", limiter.tryAcquire(key));
         }

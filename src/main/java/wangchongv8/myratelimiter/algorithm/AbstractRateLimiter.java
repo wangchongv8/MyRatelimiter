@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import wangchongv8.myratelimiter.core.RateLimiter;
 import wangchongv8.myratelimiter.core.RateLimiterConfig;
 import wangchongv8.myratelimiter.core.RateLimitExceededException;
@@ -85,26 +86,58 @@ public abstract class AbstractRateLimiter implements RateLimiter {
     }
 
     /**
-     * 阻塞获取许可，每 10ms 轮询一次 {@link #tryAcquire}。
+     * 估算获取指定数量许可的等待时间（毫秒）。默认返回 -1 表示无法估算，
+     * 此时退化为指数退避。子类可以覆盖此方法提供精确估算。
+     *
+     * @param permits 请求的许可数量
+     * @return 估算等待时间（毫秒），-1 表示无法估算
+     */
+    protected long estimateWaitTimeMs(int permits) {
+        return -1;
+    }
+
+    /**
+     * 阻塞获取许可。
+     *
+     * <p>如果算法可以提供等待时间估算（{@link #estimateWaitTimeMs} 返回正值），
+     * 则使用 {@link LockSupport#parkNanos(long)} 精确等待后重试；
+     * 否则使用指数退避（1ms→2ms→4ms…→200ms）。
      * 超时或中断时抛出 {@link RateLimitExceededException}。
      */
     @Override
     public void acquire(String key, int permits, long timeout, TimeUnit unit) {
         validate(key, permits);
         long deadline = System.currentTimeMillis() + unit.toMillis(timeout);
+        long backoffMs = 1;
+
         while (true) {
             if (tryAcquire(key, permits)) {
                 return;
             }
-            if (System.currentTimeMillis() >= deadline) {
+
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining <= 0) {
                 throw new RateLimitExceededException(
                     "Rate limit exceeded for key: " + key);
             }
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RateLimitExceededException("Interrupted while waiting for rate limit");
+
+            long waitMs = estimateWaitTimeMs(permits);
+            if (waitMs > 0) {
+                if (waitMs - remaining > 50) {
+                    throw new RateLimitExceededException(
+                        "Rate limit exceeded for key: " + key);
+                }
+                waitMs = Math.min(waitMs, remaining);
+            } else {
+                waitMs = Math.min(backoffMs, remaining);
+                backoffMs = Math.min(backoffMs * 2, 200);
+            }
+
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(waitMs));
+
+            if (Thread.interrupted()) {
+                throw new RateLimitExceededException(
+                    "Interrupted while waiting for rate limit for key: " + key);
             }
         }
     }
