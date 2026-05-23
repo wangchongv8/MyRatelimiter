@@ -11,3 +11,5 @@ target/
 .settings/
 .vscode/
 .java-version
+docs/review*
+AGENTS.md

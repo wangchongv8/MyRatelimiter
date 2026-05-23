@@ -34,11 +34,6 @@ public class TokenBucketLimiter extends AbstractRateLimiter {
     }
 
     @Override
-    protected long estimateWaitTimeMs(int permits) {
-        return (long) Math.ceil(permits / rate * 1000.0) + 50;
-    }
-
-    @Override
     public boolean tryAcquire(String key, int permits) {
         validate(key, permits);
         String redisKey = config.getRedisKeyPrefix() + key;

@@ -14,6 +14,9 @@ local requested = tonumber(ARGV[3])
 -- 计数器从 requested 而非 0 开始，节省一次 INCR 调用。
 local current = redis.call('GET', key)
 if current == false then
+    if requested > limit then
+        return 0
+    end
     redis.call('SET', key, requested, 'EX', window)
     return 1
 end

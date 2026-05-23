@@ -2,19 +2,24 @@ package wangchongv8.myratelimiter.algorithm;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
 import wangchongv8.myratelimiter.core.RateLimiterConfig;
 import wangchongv8.myratelimiter.redis.RedisOperations;
 
 /**
  * 滑动日志（Sliding Log）限流算法。
  *
- * <p>与滑动窗口实现相同（ZSET），语义上记录每次请求的精确时间戳。
- * 精度最高但 Redis 内存开销最大，适用于需要精确审计的场景。
+ * <p>基于 Redis ZSET 实现，每次请求作为独立条目记录，时间戳为 score。
+ * 精度最高（逐请求精确判断），保留完整请求日志可审计回溯。
+ * 内存随请求数增长，高流量下开销大。
  *
- * @see SlidingWindowLimiter 内存开销更小的滑动窗口替代方案
+ * @see SlidingWindowLimiter 内存有界的子窗口计数器替代方案
  */
 public class SlidingLogLimiter extends AbstractRateLimiter {
     private static final String LUA_SCRIPT = loadScript("/lua/sliding_log.lua");
+    /** 实例唯一前缀，防止分布式环境下不同 JVM 生成相同的 ZSET member */
+    private static final String INSTANCE_ID =
+        UUID.randomUUID().toString().substring(0, 8);
 
     public SlidingLogLimiter(RateLimiterConfig config, RedisOperations redisOps) {
         super(config, redisOps);
@@ -27,7 +32,7 @@ public class SlidingLogLimiter extends AbstractRateLimiter {
         List<String> args = Arrays.asList(
             String.valueOf(config.getIntervalSeconds() * 1000L),
             String.valueOf(config.getPermits()),
-            String.valueOf(System.nanoTime()),
+            INSTANCE_ID + ":" + System.nanoTime(),
             String.valueOf(permits)
         );
         Long result = redisOps.eval(LUA_SCRIPT, redisKey, args);

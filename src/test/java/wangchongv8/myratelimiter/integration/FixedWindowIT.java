@@ -58,4 +58,12 @@ public class FixedWindowIT extends BaseRedisIT {
 
         assertTrue(limiter.tryAcquire(key));
     }
+
+    @Test
+    public void shouldRejectOversizedFirstRequest() {
+        // 首次请求的 permits 超过 limit，应直接拒绝
+        assertFalse(limiter.tryAcquire("it:fw:oversized", 10));
+        // 窗口未创建，后续正常请求应通过
+        assertTrue(limiter.tryAcquire("it:fw:oversized"));
+    }
 }

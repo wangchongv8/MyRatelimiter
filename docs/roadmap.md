@@ -40,3 +40,36 @@
 - 与动态配置的配合（配置中心读取指标做出自动调整）
 - 是否影响 Lua 脚本设计（如脚本内计数并返回）
 - 对性能的影响（指标收集不能成为瓶颈）
+
+---
+
+## Lua 精确返回 retry-after（待实现）
+
+当前 `acquire` 的阻塞等待依赖指数退避（1ms→2ms→4ms→...→200ms）。每次退避后重试都需要一次 Redis `eval` 调用——被拒绝→park→重试→再被拒绝→park→... 直到放行或超时，中途可能浪费多轮 Redis 往返。
+
+### 优化方向
+
+Lua 脚本在拒绝时不止返回 `0`，而是返回 `{0, wait_ms}`（被拒绝 + 还需等多少毫秒）。Java 侧解析后 `LockSupport.parkNanos` 一次等待到位，醒来重试一次即成功。
+
+```lua
+-- token_bucket.lua 拒绝分支改为：
+if tokens >= requested then
+    return {1}            -- 放行
+end
+local deficit = requested - tokens
+local wait_ms = math.ceil(deficit / rate * 1000)
+return {0, wait_ms}       -- 拒绝 + 还需等多久
+```
+
+- TokenBucket：`deficit / rate * 1000`（缺多少令牌，等多久填充）
+- LeakyBucket：`excess / rate * 1000`（超出容量多少，等多久漏掉）
+- FixedWindow：`TTL * 1000`（等窗口重置）
+- SlidingWindow：`(now - oldest_entry_time + window)` 或退化到 TTL
+- SlidingLog：`(now - oldest_ZSET_score + window)`
+
+### 待细化
+
+- `RedisOperations.eval()` 返回类型需从 `Long` 升级为能承载列表返回值（如 `Object` 或新增 `evalList` 方法）
+- 现有 SPI 实现（Jedis/Redisson）如何适配 Lua 返回 table 的解析
+- 向后兼容：SDK 升级后旧 Lua 脚本、自定义 `RedisOperations` 实现如何兼容
+- 回退策略：如果 Lua 脚本未升级（仍返回单个 `0`），Java 退化为当前指数退避
